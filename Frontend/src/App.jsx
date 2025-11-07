@@ -1,134 +1,218 @@
-import './App.css'
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
-import L from 'leaflet'
-import 'leaflet/dist/leaflet.css'
-import { useEffect, useState } from 'react'
-import mousePointerIcon from './assets/mouse-pointer-2.png'
+// File: src/App.jsx
+import './App.css';
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  MapContainer,
+  TileLayer,
+  ImageOverlay,
+  useMap,
+} from 'react-leaflet';
+import * as L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import ImageUploadButton from './components/ImageUploadButton';
+import ImagePositioner from './components/ImagePositioner';
+import MousePointer from './components/MousePointer';
 
-// Create custom icon using PNG image
-const createPointerIcon = () => {
-  return L.icon({
-    iconUrl: mousePointerIcon,
-    iconSize: [20, 20],
-    iconAnchor: [10, 10],
-    popupAnchor: [0, -15]
-  })
+// ✅ Fix missing marker icons (Leaflet default icons issue in Vite)
+// delete L.Icon.Default.prototype._getIconUrl;
+// L.Icon.Default.mergeOptions({
+//   iconRetinaUrl:
+//     'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+//   iconUrl:
+//     'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+//   shadowUrl:
+//     'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+// });
+
+// ✅ Base Map Layer Configuration
+const baseMaps = {
+  'Carto Voyager': {
+    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    attribution:
+      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+  },
+};
+
+// ✅ Utility: Safely compute valid bounds
+function getBoundsFromPosition(pos) {
+  if (!pos) return null;
+  const { Minlat, Maxlat, Minlng, Maxlng, imageUrl } = pos;
+
+  const a = Number(Minlat);
+  const b = Number(Maxlat);
+  const c = Number(Minlng);
+  const d = Number(Maxlng);
+
+  // Validate all numbers
+  if (![a, b, c, d].every(Number.isFinite)) return null;
+
+  const south = Math.min(a, b);
+  const north = Math.max(a, b);
+  const west = Math.min(c, d);
+  const east = Math.max(c, d);
+
+  // Invalid rectangle or missing image
+  if (south === north || west === east) return null;
+  if (!imageUrl || typeof imageUrl !== 'string') return null;
+
+  return [
+    [south, west],
+    [north, east],
+  ];
 }
 
-const pointerIcon = createPointerIcon()
+// ✅ Auto-fit the map when bounds change
+function FitBounds({ bounds, padding = [20, 20] }) {
+  const map = useMap();
 
-// Carto Voyager base map configuration
-const baseMaps = {
-  "Carto Voyager": {
-    id: 'carto-voyager',
-    name: 'Carto Voyager',
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    maxZoom: 19
-  }
+  useEffect(() => {
+    if (!bounds) return;
+    try {
+      map.fitBounds(bounds, { padding });
+    } catch (e) {
+      console.warn('fitBounds failed:', e);
+    }
+  }, [map, bounds, padding]);
+
+  return null;
 }
 
 function App() {
-  // Default center position (India)
-  const position = [20.5937, 78.9629] // Coordinates for center of India
-  const zoomLevel = 5 // Zoom level to show most of India
-  
-  const [ships, setShips] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const defaultCenter = [20.5937, 78.9629]; // India center
+  const zoomLevel = 5;
 
-  // Fetch ship data from backend API
+  const [selectedImage, setSelectedImage] = useState(null); // File
+  const [imagePosition, setImagePosition] = useState(null); // { Minlat, Maxlat, Minlng, Maxlng, imageUrl }
+
+  // Compute bounds safely
+  const bounds = useMemo(() => getBoundsFromPosition(imagePosition), [imagePosition]);
+
+  // Cleanup blob URLs on unmount or reset
   useEffect(() => {
-    const fetchShips = async () => {
+    return () => {
+      if (
+        imagePosition &&
+        imagePosition.imageUrl &&
+        imagePosition.imageUrl.startsWith('blob:')
+      ) {
+        try {
+          URL.revokeObjectURL(imagePosition.imageUrl);
+        } catch (e) {
+          console.warn('Failed to revoke object URL', e);
+        }
+      }
+    };
+  }, [imagePosition]);
+
+  // Handle image upload
+  const handleImageSelect = (file) => {
+    setSelectedImage(file);
+    setImagePosition(null);
+  };
+
+  // Handle user-submitted coordinates from ImagePositioner
+  const handlePositionSet = (positionData) => {
+    // Clean up old image preview to avoid blob URL leaks
+    if (
+      imagePosition &&
+      imagePosition.imageUrl &&
+      imagePosition.imageUrl.startsWith('blob:')
+    ) {
       try {
-        const response = await fetch('http://localhost:3000/api')
-        const data = await response.json()
-        setShips(data.ships)
-        setLoading(false)
-        setError(null)
-      } catch (error) {
-        console.error('Error fetching ship data:', error)
-        setLoading(false)
-        setError('Failed to fetch ship data. Please check if the backend server is running.')
+        URL.revokeObjectURL(imagePosition.imageUrl);
+      } catch (e) {
+        console.warn(' Could not revoke previous image URL');
       }
     }
+    setImagePosition(positionData);
+  };
 
-    // Fetch immediately and then every 10 seconds
-    fetchShips()
-    const interval = setInterval(fetchShips, 10000)
-    
-    return () => clearInterval(interval)
-  }, [])
+  // Reset all data and clean up preview
+  const handleReset = () => {
+    if (
+      imagePosition &&
+      imagePosition.imageUrl &&
+      imagePosition.imageUrl.startsWith('blob:')
+    ) {
+      try {
+        URL.revokeObjectURL(imagePosition.imageUrl);
+      } catch (e) {}
+    }
+    setSelectedImage(null);
+    setImagePosition(null);
+  };
 
   return (
-    <div className="map-container">
-      <MapContainer 
-        center={position} 
-        zoom={zoomLevel} 
-        className="leaflet-container"
-        style={{ height: "100%", width: "100%" }}
+    <div className="map-container" style={{ height: '100%', width: '100%'}}>
+      <MapContainer
+        center={defaultCenter}
+        zoom={zoomLevel}
+        style={{ height: '100%', width: '100%'}}
       >
         <TileLayer
-          url={baseMaps["Carto Voyager"].url}
-          attribution={baseMaps["Carto Voyager"].attribution}
+          url={baseMaps['Carto Voyager'].url}
+          attribution={baseMaps['Carto Voyager'].attribution}
         />
-        
-        {/* Render ship markers with custom PNG icon */}
-        {ships.map((ship, index) => {
-          // Extract latitude and longitude from ship data
-          const metaData = ship.MetaData || {}
-          const payload = ship.Payload || {}
-          const lat = metaData.latitude || payload.latitude || ship.latitude
-          const lng = metaData.longitude || payload.longitude || ship.longitude
-          
-          // Only render marker if we have valid coordinates
-          if (lat && lng && typeof lat === 'number' && typeof lng === 'number') {
-            return (
-              <Marker 
-                key={index} 
-                position={[lat, lng]} 
-                icon={pointerIcon}
-              >
-                <Popup>
-                  <strong>Ship Information</strong><br />
-                  MMSI: {metaData.MMSI || 'N/A'}<br />
-                  Latitude: {lat.toFixed(4)}<br />
-                  Longitude: {lng.toFixed(4)}<br />
-                  Timestamp: {metaData.time_utc || 'N/A'}
-                </Popup>
-              </Marker>
-            )
-          }
-          return null
-        })}
+
+        {/* ✅ Render overlay only when bounds are valid */}
+        {bounds && imagePosition && (
+          <>
+            <ImageOverlay
+              url={imagePosition.imageUrl}
+              bounds={bounds}
+              opacity={1}
+              zIndex={500}
+            />
+            <FitBounds bounds={bounds} />
+          </>
+        )}
+        <MousePointer/>
       </MapContainer>
-      
-      {/* Display loading or status information
-      <div style={{ 
-        position: 'absolute', 
-        top: 10, 
-        right: 10, 
-        backgroundColor: 'white', 
-        padding: 10, 
-        borderRadius: 5,
-        zIndex: 1000,
-        minWidth: 200
-      }}>
-        <div>Ships displayed: {ships.length}</div>
-        <div>{loading ? 'Loading...' : error ? error : 'Data updated'}</div>
-        {ships.length === 0 && !loading && !error && (
-          <div style={{ marginTop: 10, fontSize: '0.9em', color: '#666' }}>
-            No ship data available. This could be due to:
-            <ul style={{ paddingLeft: 20, margin: '5px 0 0 0' }}>
-              <li>API connection limits</li>
-              <li>No ships in the current region</li>
-              <li>Backend server issues</li>
-            </ul>
+
+      {/* 🧭 Control Panel (Upload / Position / Reset) */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 10,
+          left: 100,
+          backgroundColor: 'white',
+          padding: 15,
+          borderRadius: 8,
+          zIndex: 1000,
+          minWidth: 100,
+          boxShadow: '0 6px 18px rgba(0,0,0,0.12)',
+        }}
+      >
+        {!selectedImage ? (
+          <ImageUploadButton onImageSelect={handleImageSelect} />
+        ) : !imagePosition ? (
+          <ImagePositioner
+            imageFile={selectedImage}
+            onPositionSet={handlePositionSet}
+          />
+        ) : (
+          <div style={{ textAlign: 'center' }}>
+            <p style={{ margin: '6px 0' }}>Image positioned</p>
+            <button
+              onClick={handleReset}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#ef4444',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+              }}
+            >
+              Reset
+            </button>
           </div>
         )}
-      </div> */}
+      </div>
+      
     </div>
-  )
+    
+  );
 }
 
-export default App
+export default App;
